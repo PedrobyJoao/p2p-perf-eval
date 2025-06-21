@@ -6,17 +6,17 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/libp2p/go-libp2p"
+	dht "github.com/libp2p/go-libp2p-kad-dht"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/routing"
 	"github.com/multiformats/go-multiaddr"
 )
 
@@ -31,41 +31,66 @@ type logMessage struct {
 	TimestampNs int64  `json:"timestamp_ns"`
 }
 
-// broadcastMessage defines the message payload.
-type broadcastMessage struct {
-	MsgID string
-}
-
 func main() {
 	// Disable standard log prefixes to keep JSON output clean.
 	log.SetFlags(0)
-	// Note: All output now goes to stdout.
 	log.SetOutput(os.Stdout)
 
-	bootstrapPeer := flag.String(
-		"bootstrap-peer",
-		"",
-		"Multiaddress of a bootstrap peer",
-	)
+	// Define variables to hold flag values.
+	var hostIP, bootstrapPeer string
+	var hostPort, apiPort int
+
+	// Command-line flags for network configuration.
+	//
+	// Example usage:
+	// To run the first (bootstrap) node:
+	// go run . -ap 8000
+	//
+	// To run a peer node connecting to the bootstrap node:
+	// go run . -ap 8001 -bp <bootstrap-node-multiaddress>
+
+	// host-ip / hi
+	flag.StringVar(&hostIP, "host-ip", "127.0.0.1", "IP address for the libp2p host")
+	flag.StringVar(&hostIP, "hi", "127.0.0.1", "IP address for the libp2p host (shorthand)")
+
+	// host-port / hp
+	flag.IntVar(&hostPort, "host-port", 0, "TCP port for the libp2p host (0 for random)")
+	flag.IntVar(&hostPort, "hp", 0, "TCP port for the libp2p host (shorthand)")
+
+	// api-port / ap
+	flag.IntVar(&apiPort, "api-port", 8000, "Port for the HTTP API server")
+	flag.IntVar(&apiPort, "ap", 8000, "Port for the HTTP API server (shorthand)")
+
+	// bootstrap-peer / bp
+	flag.StringVar(&bootstrapPeer, "bootstrap-peer", "", "Multiaddress of a bootstrap peer")
+	flag.StringVar(&bootstrapPeer, "bp", "", "Multiaddress of a bootstrap peer (shorthand)")
+
 	flag.Parse()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Create a new libp2p host.
-	// It listens on all available interfaces on a random port.
+	// Construct the listen address for the libp2p host.
+	listenAddr := fmt.Sprintf("/ip4/%s/tcp/%d", hostIP, hostPort)
+
+	var idht *dht.IpfsDHT
+	var err error
 	h, err := libp2p.New(
-		libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/0"),
+		libp2p.ListenAddrStrings(listenAddr),
+		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
+			idht, err = dht.New(ctx, h)
+			return idht, err
+		}),
 	)
 	if err != nil {
 		log.Fatalf("Failed to create host: %v", err)
 	}
 	defer h.Close()
 
-	// Print the host's Peer ID to stdout for the orchestrator.
+	// The first line of output is the Peer ID for the orchestrator.
 	fmt.Println(h.ID())
+	fmt.Println(h.Addrs())
 
-	// Initialize gossipsub.
 	ps, err := pubsub.NewGossipSub(ctx, h)
 	if err != nil {
 		log.Fatalf("Failed to create pubsub: %v", err)
@@ -85,12 +110,13 @@ func main() {
 	go handleMessages(ctx, sub, h.ID())
 
 	// If a bootstrap peer is provided, connect to it.
-	if *bootstrapPeer != "" {
-		connectToPeer(ctx, h, *bootstrapPeer)
+	if bootstrapPeer != "" {
+		connectToPeer(ctx, h, bootstrapPeer)
 	}
 
 	// Start an HTTP server to trigger message broadcasts.
-	startBroadcastServer(topic)
+	apiListenAddr := fmt.Sprintf(":%d", apiPort)
+	startAPIServer(apiListenAddr, topic)
 
 	// Wait for a termination signal.
 	sigCh := make(chan os.Signal, 1)
@@ -108,8 +134,7 @@ func handleMessages(ctx context.Context, sub *pubsub.Subscription, selfID peer.I
 	for {
 		msg, err := sub.Next(ctx)
 		if err != nil {
-			// Context cancellation will also trigger an error here.
-			return
+			return // Context cancellation will trigger an error.
 		}
 
 		// Don't log messages we sent ourselves.
@@ -149,53 +174,10 @@ func connectToPeer(ctx context.Context, h host.Host, peerAddr string) {
 	}
 }
 
-// startBroadcastServer sets up an HTTP endpoint to publish messages.
-func startBroadcastServer(topic *pubsub.Topic) {
-	http.HandleFunc("/broadcast", func(w http.ResponseWriter, r *http.Request) {
-		msgID := uuid.New().String()
-		bMsg := broadcastMessage{MsgID: msgID}
-		msgBytes, err := json.Marshal(bMsg)
-		if err != nil {
-			http.Error(
-				w,
-				"Failed to marshal message",
-				http.StatusInternalServerError,
-			)
-			return
-		}
-
-		// Log the broadcast event first.
-		logJSON(logMessage{
-			Event:       "message_broadcast",
-			MsgID:       msgID,
-			TimestampNs: time.Now().UnixNano(),
-		})
-
-		// Publish the message to the network.
-		if err := topic.Publish(context.Background(), msgBytes); err != nil {
-			log.Printf("Failed to publish message: %v", err)
-		}
-
-		fmt.Fprintf(w, "Broadcast message with ID: %s\n", msgID)
-	})
-
-	go func() {
-		// Listen on port 8000 inside the container.
-		if err := http.ListenAndServe(":8000", nil); err != nil {
-			// Use a structured log for the fatal error.
-			log.Fatalf(
-				`{"event": "http_server_failed", "error": "%v"}`,
-				err,
-			)
-		}
-	}()
-}
-
 // logJSON marshals the log message to JSON and prints it.
 func logJSON(msg logMessage) {
 	b, err := json.Marshal(msg)
 	if err != nil {
-		// This is a fallback for logging issues.
 		log.Printf("Failed to marshal log message: %v", err)
 		return
 	}
