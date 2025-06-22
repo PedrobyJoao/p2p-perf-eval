@@ -54,8 +54,8 @@ func main() {
 	flag.StringVar(&hostIP, "hi", "127.0.0.1", "IP address for the libp2p host (shorthand)")
 
 	// host-port / hp
-	flag.IntVar(&hostPort, "host-port", 0, "TCP port for the libp2p host (0 for random)")
-	flag.IntVar(&hostPort, "hp", 0, "TCP port for the libp2p host (shorthand)")
+	flag.IntVar(&hostPort, "host-port", 9999, "TCP port for the libp2p host (0 for random)")
+	flag.IntVar(&hostPort, "hp", 9999, "TCP port for the libp2p host (shorthand)")
 
 	// api-port / ap
 	flag.IntVar(&apiPort, "api-port", 8000, "Port for the HTTP API server")

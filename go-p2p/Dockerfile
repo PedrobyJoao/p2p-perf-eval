@@ -34,3 +34,5 @@ EXPOSE 8000
 # when the container starts. Flags can be passed to this
 # entrypoint.
 ENTRYPOINT ["p2p-node"]
+
+CMD ["-hi=0.0.0.0"]
