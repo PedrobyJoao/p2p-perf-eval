@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -18,6 +19,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/routing"
 	"github.com/multiformats/go-multiaddr"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // The topic name for gossipsub.
@@ -69,6 +71,11 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	go func() {
+		http.Handle("/debug/metrics/prometheus", promhttp.Handler())
+		log.Fatal(http.ListenAndServe(":5001", nil))
+	}()
 
 	// Construct the listen address for the libp2p host.
 	listenAddr := fmt.Sprintf("/ip4/%s/tcp/%d", hostIP, hostPort)
