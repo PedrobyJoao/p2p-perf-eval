@@ -11,30 +11,24 @@ import requests
 import seaborn as sns
 import matplotlib.pyplot as plt
 
-# --- Configuration ---
-# Using 6 nodes: 1 bootstrap + 5 peers
-NUM_PEERS = 5
-# Name for the Docker image and network
-IMAGE_NAME = "p2p-node"
-NETWORK_NAME = "p2p-test-network"
-# Path to the Go application's Dockerfile
-DOCKERFILE_PATH = "./go-p2p"
-# Ports used by the p2p node
-API_PORT = 8000
-P2P_PORT = 4001
-# Timeouts for network setup and message propagation
-NETWORK_FORMATION_TIME_S = 10
-PROPAGATION_TIME_S = 5
-# Output file for the latency plot
-PLOT_FILE = "latency_distribution.png"
+from docker import errors
+from docker.models.containers import Container
+from docker.models.images import Image
+from docker.models.networks import Network
 
-# --- Script Setup ---
+
+IMAGE_NAME = "go-p2p-node"
+NETWORK_NAME = "p2p-test-network"
+DOCKERFILE_PATH = "./go-p2p"
+P2P_PORT = 4001
+BOOTSTRAP_API_PORT = 8000
+BOOTSTRAP_METRICS_PORT = 5001
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     stream=sys.stdout,
 )
-
 
 def main():
     """
@@ -46,257 +40,147 @@ def main():
     containers = []
 
     try:
-        logging.info(f"Building Docker image: {IMAGE_NAME}")
+        # 1. Create Docker network
+        network = create_network(client)
+        
+        # 2. Build image based on dockerfile path
         image = build_image(client)
 
-        logging.info(f"Creating Docker network: {NETWORK_NAME}")
-        network = client.networks.create(NETWORK_NAME, driver="bridge")
+        # 3. Deploy bootstrap peer and retrieve its peer ID
+        logging.info("Deploying bootstrap peer...")
+        bootstrap_container = deploy_peer(
+            client=client,
+            image=image,
+            network=network,
+            metrics_port=BOOTSTRAP_METRICS_PORT,
+            api_port=BOOTSTRAP_API_PORT,
+        )
+        containers.append(bootstrap_container)
 
-        logging.info("Starting bootstrap node...")
+        bootstrap_peer_id = get_peer_id(bootstrap_container)
+        if not bootstrap_peer_id:
+            raise RuntimeError("Failed to retrieve bootstrap peer ID.")
+        
+        logging.info(f"Bootstrap peer deployed with ID: {bootstrap_peer_id}")
 
-        # TODO: scale number of bootstrap nodes to number of total peers
-        bootstrap_node = start_node(client, image, network, "bootstrap-node", None)
-        containers.append(bootstrap_node)
-
-        logging.info("Retrieving bootstrap multiaddress...")
-        bootstrap_multiaddr = get_bootstrap_multiaddr(bootstrap_node)
-        logging.info(f"Bootstrap address: {bootstrap_multiaddr}")
-
-        logging.info(f"Starting {NUM_PEERS} peer nodes...")
-        for i in range(NUM_PEERS):
-            peer_node = start_node(
-                client,
-                image,
-                network,
-                f"peer-node-{i}",
-                bootstrap_multiaddr,
-            )
-            containers.append(peer_node)
-
-        logging.info("Waiting for network to form..." f"({NETWORK_FORMATION_TIME_S}s)")
-        time.sleep(NETWORK_FORMATION_TIME_S)
-
-        broadcasting_node = random.choice([c for c in containers if "peer" in c.name])
-        logging.info(f"Triggering broadcast from {broadcasting_node.name}")
-        trigger_broadcast(broadcasting_node)
-
-        logging.info("Waiting for message propagation..." f"({PROPAGATION_TIME_S}s)")
-        time.sleep(PROPAGATION_TIME_S)
-
-        logging.info("Collecting logs for analysis...")
-        latencies_ms = analyze_logs(containers)
-
-        if latencies_ms is not None and not latencies_ms.empty:
-            logging.info("Generating performance report...")
-            generate_report(latencies_ms)
-        else:
-            logging.warning("No message data found. Skipping report.")
-
+        # TODO 4. range over num of peers to test and deploy them passing bootstapper peerID
     except Exception as e:
-        logging.error(f"An error occurred: {e}")
-        if hasattr(e, "explanation"):
-            logging.error(f"Explanation: {e.explanation}")
+        logging.error(f"Error occurred: {e}")
+
     finally:
         logging.info("Cleaning up resources...")
-        cleanup(containers, network)
-        logging.info("Cleanup complete.")
+        for container in containers:
+            try:
+                container.stop()
+                container.remove()
+                logging.info(f"Stopped and removed container: {container.name}")
+            except errors.NotFound:
+                logging.warning(f"Container {container.name} not found for cleanup, already removed.")
+            except Exception as e:
+                logging.error(f"Error cleaning up container {container.name}: {e}")
+        
+        if network:
+            try:
+                network.remove()
+                logging.info(f"Removed network: {NETWORK_NAME}")
+            except errors.NotFound:
+                logging.warning(f"Network {NETWORK_NAME} not found for cleanup, already removed.")
+            except Exception as e:
+                logging.error(f"Error removing network {NETWORK_NAME}: {e}")
+    
+
+def create_network(client: docker.DockerClient) -> Network:
+    """Creates a Docker network."""
+    # In case of a previous failed run, remove the old network.
+    try:
+        existing_network = client.networks.get(NETWORK_NAME)
+        logging.info(f"Removing existing network: {NETWORK_NAME}")
+        existing_network.remove()
+    except errors.NotFound:
+        pass
+
+    logging.info(f"Creating Docker network: {NETWORK_NAME}")
+    return client.networks.create(NETWORK_NAME, driver="bridge")
 
 
-def build_image(client: docker.DockerClient):
+
+def build_image(client: docker.DockerClient) -> Image:
     """Builds the Docker image from the go-p2p Dockerfile."""
-    try:
-        image, _ = client.images.build(path=DOCKERFILE_PATH, tag=IMAGE_NAME, rm=True)
-        return image
-    except docker.errors.BuildError as e:
-        logging.error("Image build failed!")
-        for line in e.build_log:
-            if "stream" in line:
-                logging.error(line["stream"].strip())
-        raise
-
-
-def start_node(
-    client: docker.DockerClient,
-    image: docker.models.images.Image,
-    network: docker.models.networks.Network,
-    name: str,
-    bootstrap_addr: str | None,
-):
-    """Starts a single p2p node container."""
-    command = [
-        f"-hi=0.0.0.0",
-        f"-ap={API_PORT}",
-        f"-hp={P2P_PORT}",
-    ]
-    if bootstrap_addr:
-        command.append(f"-bp={bootstrap_addr}")
-
-    container = client.containers.run(
-        image=image.id,
-        command=command,
-        name=name,
-        network=network.name,
-        detach=True,
-        auto_remove=True,
-        ports={f"{API_PORT}/tcp": None},
+    logging.info(f"Building Docker image: {IMAGE_NAME} from {DOCKERFILE_PATH}")
+    image, _ = client.images.build(
+        path=DOCKERFILE_PATH,
+        tag=IMAGE_NAME,
+        rm=True
     )
-    return container
+    logging.info(f"Successfully built image: {image.id}")
+    return image
 
-
-def get_bootstrap_multiaddr(
-    bootstrap_node: docker.models.containers.Container,
-) -> str:
+def deploy_peer(
+    client: docker.DockerClient,
+    image: Image,
+    network: Network,
+    metrics_port: int,
+    api_port: int,
+    bootstrap_peer_id: str | None = None,
+) -> Container:
     """
-    Retrieves the full multiaddress of the bootstrap node by
-    inspecting its logs and network settings.
+    Deploys a single P2P node as a Docker container.
+
+    If 'bootstrap_peer_id' is None, it deploys a bootstrap node.
+    Otherwise, it deploys a peer node that connects to the bootstrap node.
     """
-    peer_id = None
-    for _ in range(10):  # Try for 10 seconds
-        logs = bootstrap_node.logs().decode("utf-8")
-        for line in logs.split("\n"):
-            if "node_initialized" in line:
-                try:
-                    log_json = json.loads(line)
-                    peer_id = log_json.get("peer_id")
-                    break
-                except json.JSONDecodeError:
-                    continue
-        if peer_id:
-            break
-        time.sleep(1)
-
-    if not peer_id:
-        raise RuntimeError("Could not find Peer ID in bootstrap node logs.")
-
-    bootstrap_node.reload()
-    ip_addr = bootstrap_node.attrs["NetworkSettings"]["Networks"][NETWORK_NAME][
-        "IPAddress"
+    command = [
+        "-ap", str(api_port),
+        "-mp", str(metrics_port),
     ]
 
-    return f"/ip4/{ip_addr}/tcp/{P2P_PORT}/p2p/{peer_id}"
+    # if no bootstrap peer is provided, this node is the bootstrapper.
+    if not bootstrap_peer_id:
+        container_name = "bootstrap-node"
+    else:
+        # this is a peer node
+        container_name = f"p2p-peer-node-{api_port}"
+        bootstrap_addr = (
+            f"/dns4/bootstrap-node/tcp/{P2P_PORT}/p2p/{bootstrap_peer_id}"
+        )
+        command.extend(["-bp", bootstrap_addr])
 
-
-def trigger_broadcast(node: docker.models.containers.Container):
-    """
-    Triggers the message broadcast via the node's HTTP API.
-    """
-    node.reload()
-    host_port = node.attrs["NetworkSettings"]["Ports"][f"{API_PORT}/tcp"][0]["HostPort"]
-
-    url = f"http://localhost:{host_port}/broadcast"
-    try:
-        response = requests.post(url, timeout=5)
-        response.raise_for_status()
-        logging.info(f"Broadcast triggered on {node.name}.")
-    except requests.RequestException as e:
-        logging.error(f"Failed to trigger broadcast on {node.name}: {e}")
-        raise
-
-
-def analyze_logs(
-    containers: list[docker.models.containers.Container],
-) -> pd.Series | None:
-    """
-    Collects and parses logs from all containers and
-    calculates message propagation latencies.
-    """
-    all_logs = []
-    for container in containers:
-        try:
-            logs = container.logs().decode("utf-8")
-            for line in logs.strip().split("\n"):
-                try:
-                    log_entry = json.loads(line)
-                    log_entry["container_name"] = container.name
-                    all_logs.append(log_entry)
-                except json.JSONDecodeError:
-                    continue
-        except docker.errors.NotFound:
-            logging.warning(f"Logs for {container.name} not found.")
-
-    if not all_logs:
-        return None
-
-    df = pd.DataFrame(all_logs)
-    broadcast_df = df[df["event"] == "message_broadcast"]
-    if broadcast_df.empty:
-        return None
-
-    broadcast_event = broadcast_df.iloc[0]
-    msg_id = broadcast_event["msg_id"]
-    broadcast_time = broadcast_event["timestamp_ns"]
-
-    received_df = df[
-        (df["event"] == "message_received") & (df["msg_id"] == msg_id)
-    ].copy()
-
-    if received_df.empty:
-        return None
-
-    received_df["latency_ms"] = (
-        received_df["timestamp_ns"] - broadcast_time
-    ) / 1_000_000
-
-    return received_df[received_df["latency_ms"] >= 0]["latency_ms"]
-
-
-def generate_report(latencies_ms: pd.Series):
-    """
-    Calculates statistics and generates a plot from latency
-    data.
-    """
-    stats = {
-        "count": latencies_ms.count(),
-        "mean (ms)": latencies_ms.mean(),
-        "median (ms)": latencies_ms.median(),
-        "std dev (ms)": latencies_ms.std(),
-        "p95 (ms)": latencies_ms.quantile(0.95),
-        "p99 (ms)": latencies_ms.quantile(0.99),
+    # Map the container ports to the same ports on the host.
+    ports = {
+        f"{api_port}/tcp": api_port,
+        f"{metrics_port}/tcp": metrics_port,
     }
 
-    print("\n--- P2P Network Latency Report ---")
-    for key, value in stats.items():
-        print(f"{key:<15}: {value:.2f}")
-    print("------------------------------------")
+    logging.info(f"Deploying container '{container_name}' with command: {' '.join(command)}")
 
-    plt.figure(figsize=(10, 6))
-    sns.histplot(latencies_ms, kde=True, bins=15)
-    plt.title("Message Propagation Latency Distribution")
-    plt.xlabel("Latency (ms)")
-    plt.ylabel("Number of Nodes")
-    plt.grid(True, linestyle="--", alpha=0.6)
-    plt.savefig(PLOT_FILE)
-    logging.info(f"Latency plot saved to {PLOT_FILE}")
-    plt.close()
+    container = client.containers.run(
+        image=image,
+        command=command,
+        name=container_name,
+        network=network.name,
+        ports=ports,
+        detach=True
+    )
 
+    logging.info(f"Container {container.name} started with ID: {container.short_id}")
+    return container
 
-def cleanup(
-    containers: list[docker.models.containers.Container],
-    network: docker.models.networks.Network | None,
-):
-    """Stops and removes all created Docker resources."""
-    for container in containers:
-        try:
-            container.stop(timeout=5)
-            logging.info(f"Stopped container: {container.name}")
-        except docker.errors.NotFound:
-            pass  # Already stopped/removed
-        except Exception as e:
-            logging.warning(f"Could not stop {container.name}: {e}")
-
-    if network:
-        try:
-            network.remove()
-            logging.info(f"Removed network: {network.name}")
-        except Exception as e:
-            logging.warning(f"Could not remove network {network.name}: {e}")
+def get_peer_id(container: Container, timeout: int = 10) -> str | None:
+    """
+    Retrieves the peer ID from the container's logs.
+    The Go application is expected to print the peer ID on the first line.
+    """
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        logs = container.logs().decode("utf-8")
+        if logs:
+            lines = logs.strip().split("\n")
+            if lines and lines[0].startswith("12D"):
+                return lines[0]
+        time.sleep(0.5)
+    logging.error(f"Timeout: Could not find peer ID for container {container.name} in {timeout}s")
+    return None
 
 
 if __name__ == "__main__":
-    if not os.path.isdir(DOCKERFILE_PATH):
-        logging.error(
-            f"Directory '{DOCKERFILE_PATH}' not found. "
-            "Please run from the repository root."
-        )
-        sys.exit(1)
     main()
