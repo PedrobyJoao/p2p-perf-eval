@@ -40,6 +40,7 @@ class NodeInfo:
     api_port: int
     metrics_port: int
 
+
 def main():
     """
     Main function to orchestrate the P2P network analysis.
@@ -133,6 +134,7 @@ def main():
             except Exception as e:
                 logging.error(f"Error removing network {NETWORK_NAME}: {e}")
 
+
 def get_free_ports(count: int) -> list[int]:
     """Finds a specified number of free TCP ports on the host."""
     ports = []
@@ -144,6 +146,7 @@ def get_free_ports(count: int) -> list[int]:
     if ports.__len__() != count:
         raise ValueError(f"Failed to find {count} free ports")
     return ports
+
 
 def create_network(client: docker.DockerClient) -> Network:
     """Creates a Docker network."""
@@ -159,7 +162,6 @@ def create_network(client: docker.DockerClient) -> Network:
     return client.networks.create(NETWORK_NAME, driver="bridge")
 
 
-
 def build_image(client: docker.DockerClient) -> Image:
     """Builds the Docker image from the go-p2p Dockerfile."""
     logging.info(f"Building Docker image: {IMAGE_NAME} from {DOCKERFILE_PATH}")
@@ -170,6 +172,7 @@ def build_image(client: docker.DockerClient) -> Image:
     )
     logging.info(f"Successfully built image: {image.id}")
     return image
+
 
 def deploy_peer(
     client: docker.DockerClient,
@@ -200,6 +203,14 @@ def deploy_peer(
             f"/dns4/bootstrap-node/tcp/{P2P_PORT}/p2p/{bootstrap_peer_id}"
         )
         command.extend(["-bp", bootstrap_addr])
+
+    # Check for and remove an existing container with the same name.
+    try:
+        existing_container = client.containers.get(container_name)
+        logging.warning(f"Removing existing container: {container_name}")
+        existing_container.remove(force=True)
+    except errors.NotFound:
+        pass  # This is the expected case.
 
     # Map the container ports to the same ports on the host.
     ports = {
