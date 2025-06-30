@@ -1,4 +1,5 @@
 import logging
+import sys
 import time
 
 
@@ -11,6 +12,13 @@ BOOTSTRAP_NAME = "bootstrap-node"
 DOCKERFILE_PATH = "./go-p2p"
 P2P_PORT = 4001
 NUM_PEERS = 5
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    stream=sys.stdout,
+)
 
 
 def main():

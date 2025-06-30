@@ -1,9 +1,8 @@
 import docker
 import logging
-import sys
 import time
 
-from utils import build_image, create_network, get_free_ports
+from .utils import build_image, create_network, get_free_ports
 
 from dataclasses import dataclass
 from docker import errors
