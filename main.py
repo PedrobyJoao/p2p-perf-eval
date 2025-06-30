@@ -23,6 +23,7 @@ from docker.models.networks import Network
 
 IMAGE_NAME = "go-p2p-node"
 NETWORK_NAME = "p2p-test-network"
+BOOTSTRAP_NAME = "bootstrap-node"
 DOCKERFILE_PATH = "./go-p2p"
 P2P_PORT = 4001
 NUM_PEERS = 5
@@ -35,7 +36,7 @@ logging.basicConfig(
 
 @dataclass
 class NodeInfo:
-    """Holds information about a running P2P node container."""
+    """Holds information about a running node container."""
     container: Container
     api_port: int
     metrics_port: int
@@ -57,7 +58,7 @@ def main():
         # 2. Build image based on dockerfile path
         image = build_image(client)
 
-        # Find free ports for all nodes (bootstrap + peers)
+        # Find free ports for all nodes (bootstrap + )
         total_nodes = NUM_PEERS + 1
         logging.info(f"Finding {total_nodes * 2} free ports for API and metrics...")
         api_ports = get_free_ports(total_nodes)
@@ -108,7 +109,7 @@ def main():
             ))
         
         logging.info(f"Successfully deployed {len(nodes)} nodes in total.")
-        time.sleep(10)
+        time.sleep(100)
 
     except Exception as e:
         logging.error(f"An error occurred during orchestration: {e}", exc_info=True)
@@ -191,16 +192,17 @@ def deploy_peer(
     command = [
         "-ap", str(api_port),
         "-mp", str(metrics_port),
+        "-hi", "0.0.0.0",
     ]
 
     # if no bootstrap peer is provided, this node is the bootstrapper.
     if not bootstrap_peer_id:
-        container_name = "bootstrap-node"
+        container_name = BOOTSTRAP_NAME
     else:
         # this is a peer node
         container_name = f"p2p-peer-node-{api_port}"
         bootstrap_addr = (
-            f"/dns4/bootstrap-node/tcp/{P2P_PORT}/p2p/{bootstrap_peer_id}"
+            f"/dns4/{BOOTSTRAP_NAME}/tcp/{P2P_PORT}/p2p/{bootstrap_peer_id}/"
         )
         command.extend(["-bp", bootstrap_addr])
 
@@ -243,7 +245,7 @@ def get_peer_id(container: Container, timeout: int = 10) -> str | None:
         if logs:
             lines = logs.strip().split("\n")
             if lines and lines[0].startswith("12D"):
-                return lines[0]
+                return lines[0].strip()
         time.sleep(0.5)
     logging.error(f"Timeout: Could not find peer ID for container {container.name} in {timeout}s")
     return None
