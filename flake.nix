@@ -37,6 +37,12 @@
 
           profile = ''
             export PATH="$HOME/.local/bin:$PATH"
+
+            rm pyrightconfig.json
+            echo '{ "venvPath": ".", "venv": ".venv" }' >> pyrightconfig.json
+
+            uv venv
+            uv sync
           '';
 
         };
