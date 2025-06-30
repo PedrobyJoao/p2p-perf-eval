@@ -9,3 +9,10 @@ dependencies = [
     "pandas>=2.3.0",
     "seaborn>=0.13.2",
 ]
+
+[tool.setuptools.packages.find]
+where = ["src"]  # list of folders that contain the packages (["."] by default)
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"

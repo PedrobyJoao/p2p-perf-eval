@@ -1,3 +1,6 @@
 misc_readme.md
 prompt.md
 .aider*
+p2p_analysis.egg-info*
+__pycache__/
+*.pyc
