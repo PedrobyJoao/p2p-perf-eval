@@ -3,8 +3,12 @@ import json
 import logging
 import os
 import random
+import socket
 import sys
 import time
+
+from contextlib import closing
+from dataclasses import dataclass
 
 import pandas as pd
 import requests
@@ -21,14 +25,20 @@ IMAGE_NAME = "go-p2p-node"
 NETWORK_NAME = "p2p-test-network"
 DOCKERFILE_PATH = "./go-p2p"
 P2P_PORT = 4001
-BOOTSTRAP_API_PORT = 8000
-BOOTSTRAP_METRICS_PORT = 5001
+NUM_PEERS = 5
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     stream=sys.stdout,
 )
+
+@dataclass
+class NodeInfo:
+    """Holds information about a running P2P node container."""
+    container: Container
+    api_port: int
+    metrics_port: int
 
 def main():
     """
@@ -37,7 +47,7 @@ def main():
     """
     client = docker.from_env()
     network = None
-    containers = []
+    nodes: list[NodeInfo] = []
 
     try:
         # 1. Create Docker network
@@ -46,16 +56,29 @@ def main():
         # 2. Build image based on dockerfile path
         image = build_image(client)
 
+        # Find free ports for all nodes (bootstrap + peers)
+        total_nodes = NUM_PEERS + 1
+        logging.info(f"Finding {total_nodes * 2} free ports for API and metrics...")
+        api_ports = get_free_ports(total_nodes)
+        metrics_ports = get_free_ports(total_nodes)
+
         # 3. Deploy bootstrap peer and retrieve its peer ID
         logging.info("Deploying bootstrap peer...")
+        bootstrap_api_port = api_ports[0]
+        bootstrap_metrics_port = metrics_ports[0]
+
         bootstrap_container = deploy_peer(
             client=client,
             image=image,
             network=network,
-            metrics_port=BOOTSTRAP_METRICS_PORT,
-            api_port=BOOTSTRAP_API_PORT,
+            metrics_port=bootstrap_metrics_port,
+            api_port=bootstrap_api_port,
         )
-        containers.append(bootstrap_container)
+        nodes.append(NodeInfo(
+            container=bootstrap_container,
+            api_port=bootstrap_api_port,
+            metrics_port=bootstrap_metrics_port
+        ))
 
         bootstrap_peer_id = get_peer_id(bootstrap_container)
         if not bootstrap_peer_id:
@@ -63,21 +86,43 @@ def main():
         
         logging.info(f"Bootstrap peer deployed with ID: {bootstrap_peer_id}")
 
-        # TODO 4. range over num of peers to test and deploy them passing bootstapper peerID
+        # 4. Deploy peer nodes
+        for i in range(NUM_PEERS):
+            # Use i+1 because index 0 is for the bootstrap node
+            api_port = api_ports[i + 1]
+            metrics_port = metrics_ports[i + 1]
+            logging.info(f"Deploying peer node {i+1}/{NUM_PEERS}...")
+            peer_container = deploy_peer(
+                client=client,
+                image=image,
+                network=network,
+                metrics_port=metrics_port,
+                api_port=api_port,
+                bootstrap_peer_id=bootstrap_peer_id,
+            )
+            nodes.append(NodeInfo(
+                container=peer_container,
+                api_port=api_port,
+                metrics_port=metrics_port
+            ))
+        
+        logging.info(f"Successfully deployed {len(nodes)} nodes in total.")
+        time.sleep(10)
+
     except Exception as e:
-        logging.error(f"Error occurred: {e}")
+        logging.error(f"An error occurred during orchestration: {e}", exc_info=True)
 
     finally:
         logging.info("Cleaning up resources...")
-        for container in containers:
+        for node in nodes:
             try:
-                container.stop()
-                container.remove()
-                logging.info(f"Stopped and removed container: {container.name}")
+                node.container.stop()
+                node.container.remove()
+                logging.info(f"Stopped and removed container: {node.container.name}")
             except errors.NotFound:
-                logging.warning(f"Container {container.name} not found for cleanup, already removed.")
+                logging.warning(f"Container {node.container.name} not found for cleanup, already removed.")
             except Exception as e:
-                logging.error(f"Error cleaning up container {container.name}: {e}")
+                logging.error(f"Error cleaning up container {node.container.name}: {e}")
         
         if network:
             try:
@@ -87,7 +132,18 @@ def main():
                 logging.warning(f"Network {NETWORK_NAME} not found for cleanup, already removed.")
             except Exception as e:
                 logging.error(f"Error removing network {NETWORK_NAME}: {e}")
-    
+
+def get_free_ports(count: int) -> list[int]:
+    """Finds a specified number of free TCP ports on the host."""
+    ports = []
+    for _ in range(count):
+        with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+            s.bind(("", 0))
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            ports.append(s.getsockname()[1])
+    if ports.__len__() != count:
+        raise ValueError(f"Failed to find {count} free ports")
+    return ports
 
 def create_network(client: docker.DockerClient) -> Network:
     """Creates a Docker network."""
