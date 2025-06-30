@@ -40,7 +40,7 @@ func main() {
 
 	// Define variables to hold flag values.
 	var hostIP, bootstrapPeer string
-	var hostPort, apiPort int
+	var hostPort, apiPort, metricsPort int
 
 	// Command-line flags for network configuration.
 	//
@@ -63,6 +63,10 @@ func main() {
 	flag.IntVar(&apiPort, "api-port", 8000, "Port for the HTTP API server")
 	flag.IntVar(&apiPort, "ap", 8000, "Port for the HTTP API server (shorthand)")
 
+	// metrics-port / mp
+	flag.IntVar(&metricsPort, "metrics-port", 5001, "Port for the Prometheus metrics server")
+	flag.IntVar(&metricsPort, "mp", 5001, "Port for the Prometheus metrics server (shorthand)")
+
 	// bootstrap-peer / bp
 	flag.StringVar(&bootstrapPeer, "bootstrap-peer", "", "Multiaddress of a bootstrap peer")
 	flag.StringVar(&bootstrapPeer, "bp", "", "Multiaddress of a bootstrap peer (shorthand)")
@@ -74,7 +78,8 @@ func main() {
 
 	go func() {
 		http.Handle("/debug/metrics/prometheus", promhttp.Handler())
-		log.Fatal(http.ListenAndServe(":5001", nil))
+		metricsListenAddr := fmt.Sprintf(":%d", metricsPort)
+		log.Fatal(http.ListenAndServe(metricsListenAddr, nil))
 	}()
 
 	// Construct the listen address for the libp2p host.
