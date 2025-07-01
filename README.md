@@ -36,6 +36,12 @@ uv run experiments/simple.py
 
 Results will be stored at `./resource_comparison.png`
 
+You can change params under `experiments/simple.py` itself.
+
+> My PC could handle only 250 peers.
+
+![Alt text](./resource_comparison.png "Example (resource usage) with mesh of 100 peers")
+
 ## What is left to be a useful tool?
 
 1. Allow arbitrary configuration of daemon port settings.

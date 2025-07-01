@@ -24,11 +24,12 @@ def main():
     """
     EXPERIMENT_DURATION_S = 60
     POLL_INTERVAL_S = 5
+    NUM_PEERS = 100
 
     with Mesh(
         image_name=const.IMAGE_NAME,
         network_name=const.NETWORK_NAME,
-        num_peers=100,
+        num_peers=NUM_PEERS, # my pc could handle only 250 nodes
         dockerfile_path=const.DOCKERFILE_PATH,
     ) as mesh:
         logging.info("Mesh deployed. Waiting 10 seconds for network to stabilize...")
@@ -84,7 +85,7 @@ def main():
         # Create plots
         sns.set_theme(style="darkgrid")
         fig, axes = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
-        fig.suptitle("Resource Usage: Bootstrap Node vs. Average of Peers", fontsize=16)
+        fig.suptitle(f'Resource Usage with a network of {NUM_PEERS} peers', fontsize=16)
 
         # Memory Plot
         sns.lineplot(
