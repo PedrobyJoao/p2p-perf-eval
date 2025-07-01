@@ -121,7 +121,7 @@ def get_resource_metrics(metrics_port: int) -> Dict[str, float] | None:
     """
     Queries a node's plain text metrics endpoint and parses the values.
     """
-    # This is the correct endpoint for the Go application's exporter.
+    # TODO: use queries (I tried and it didn't work for some reason)
     url = f"http://localhost:{metrics_port}/debug/metrics/prometheus"
     metric_names = [
         "go_memstats_alloc_bytes",
