@@ -4,6 +4,7 @@ import time
 
 from .utils import build_image, create_network, get_free_ports
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from docker import errors
 from docker.models.containers import Container
@@ -96,25 +97,40 @@ class Mesh:
         
         logging.info(f"Bootstrap peer deployed with ID: {bootstrap_peer_id}")
 
-        # 4. Deploy peer nodes
-        for i in range(self.num_peers):
-            # Use i+1 because index 0 is for the bootstrap node
-            api_port = api_ports[i + 1]
-            metrics_port = metrics_ports[i + 1]
-            logging.info(f"Deploying peer node {i+1}/{self.num_peers}...")
-            peer_container = deploy_peer(
-                client=self.client,
-                image=image,
-                network=self.network,
-                metrics_port=metrics_port,
-                api_port=api_port,
-                bootstrap_peer_id=bootstrap_peer_id,
-            )
-            self.nodes.append(NodeInfo(
-                container=peer_container,
-                api_port=api_port,
-                metrics_port=metrics_port
-            ))
+        # 4. Deploy peer nodes in parallel
+        with ThreadPoolExecutor(max_workers=self.num_peers) as executor:
+            tasks = []
+            for i in range(self.num_peers):
+                api_port = api_ports[i + 1]
+                metrics_port = metrics_ports[i + 1]
+                logging.info(f"Submitting deployment for peer node {i+1}/{self.num_peers}...")
+                
+                future = executor.submit(
+                    deploy_peer,
+                    client=self.client,
+                    image=image,
+                    network=self.network,
+                    metrics_port=metrics_port,
+                    api_port=api_port,
+                    bootstrap_peer_id=bootstrap_peer_id,
+                )
+                tasks.append({
+                    "future": future,
+                    "api_port": api_port,
+                    "metrics_port": metrics_port
+                })
+
+            logging.info("Waiting for all peer deployments to complete...")
+            for task in tasks:
+                try:
+                    peer_container = task["future"].result()
+                    self.nodes.append(NodeInfo(
+                        container=peer_container,
+                        api_port=task["api_port"],
+                        metrics_port=task["metrics_port"]
+                    ))
+                except Exception as exc:
+                    logging.error(f"Deployment for peer with api_port {task['api_port']} generated an exception: {exc}")
         
         logging.info(f"Successfully deployed {len(self.nodes)} nodes in total.")
 
